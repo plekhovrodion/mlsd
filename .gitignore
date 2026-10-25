@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data and models
+data/
+*.pkl
+*.ckpt
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Course materials
+prezentation/
