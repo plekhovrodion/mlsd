@@ -9,6 +9,8 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ["--maxkb=1024"]
+        # Выполненный ноутбук и галерея EDA содержат иллюстрации COCO.
+        exclude: ^(notebooks/01_coco_eda\.ipynb|reports/eda/kaggle_hw2_results/image_examples\.png)$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.8.6
