@@ -7,6 +7,7 @@ from photoquest_eval.data import (
     POSITIVE,
     UNKNOWN,
     coco_to_yolo,
+    copy_images,
     load_coco,
     load_openimages,
     sample_openimages,
@@ -78,6 +79,30 @@ def test_coco_to_yolo(tmp_path):
     assert (out / "train" / "images" / "1.jpg").is_symlink()
     yaml = write_yolo_yaml(out, ["bottle"]).read_text(encoding="utf-8")
     assert "train: train/images" in yaml and "0: bottle" in yaml
+
+
+def test_coco_to_yolo_copies_and_resizes(tmp_path):
+    from PIL import Image
+
+    annotations = tmp_path / "instances.json"
+    _write_coco(annotations)
+    for name in ("1.jpg", "2.jpg"):
+        Image.new("RGB", (100, 100), "red").save(tmp_path / name)
+    out = tmp_path / "out"
+    coco_to_yolo(annotations, tmp_path, out, ["bottle"], 1, 0, max_side=50, workers=2)
+    copied = out / "train" / "images" / "1.jpg"
+    assert not copied.is_symlink()
+    with Image.open(copied) as image:
+        assert image.size == (50, 50)
+    # Повторный запуск не падает и пропускает готовые файлы.
+    coco_to_yolo(annotations, tmp_path, out, ["bottle"], 1, 0, max_side=50, workers=2)
+
+
+def test_copy_images_reports_failures(tmp_path):
+    (tmp_path / "ok.jpg").write_bytes(b"jpeg")
+    failed = copy_images([tmp_path / "ok.jpg", tmp_path / "missing.jpg"], tmp_path / "out")
+    assert failed == [tmp_path / "missing.jpg"]
+    assert (tmp_path / "out" / "ok.jpg").read_bytes() == b"jpeg"
 
 
 def test_crowd_images_are_not_negatives(tmp_path):

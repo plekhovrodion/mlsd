@@ -130,7 +130,14 @@ TRAIN_SETTINGS = {
     "workers": 4,
     "save_period": 5,
 }
-DATA_SETTINGS = {"negative_fraction": 0.1, "val_fraction": 0.1, "seed": SEED}""",
+# Фото копируются на локальный диск и уменьшаются до размера входа: чтение из
+# /kaggle/input идёт с сетевого хранилища и замедляет каждую эпоху в разы.
+DATA_SETTINGS = {
+    "negative_fraction": 0.1,
+    "val_fraction": 0.1,
+    "seed": SEED,
+    "max_side": TRAIN_SETTINGS["imgsz"],
+}""",
     ),
     ("markdown", "## Данные\n\nИщем аннотации COCO train2017 во входных данных ноутбука."),
     (
@@ -152,8 +159,13 @@ print(TRAIN_IMAGES, sum(1 for _ in TRAIN_IMAGES.glob("*.jpg")), "JPEG")""",
     ),
     (
         "code",
-        """DATASET = Path("/kaggle/working/coco_home_yolo")
+        """# /tmp — локальный диск сессии; он не попадает в вывод ноутбука и не занимает
+# лимит /kaggle/working. Повторный запуск пропускает уже скопированные фото.
+DATASET = Path("/tmp/coco_home_yolo")
+copy_started = time.perf_counter()
 split_stats = coco_to_yolo(TRAIN_ANNOTATIONS, TRAIN_IMAGES, DATASET, TARGETS, **DATA_SETTINGS)
+copy_seconds = time.perf_counter() - copy_started
+print(f"Подготовка выборки заняла {copy_seconds / 60:.1f} мин")
 DATASET_YAML = write_yolo_yaml(DATASET, TARGETS)
 display(pd.DataFrame(split_stats).T)
 print(DATASET_YAML.read_text())""",
@@ -248,6 +260,7 @@ display(exports)""",
     "train_settings": TRAIN_SETTINGS,
     "best_epoch": int(history.loc[history["metrics/mAP50-95(B)"].idxmax(), "epoch"]),
     "epochs_run": int(history["epoch"].max()),
+    "data_prep_seconds": round(copy_seconds, 1),
     "train_seconds": round(train_seconds, 1),
     "gpu": torch.cuda.get_device_name(0),
     "python": platform.python_version(),
@@ -297,6 +310,7 @@ from PIL import Image
 
 from photoquest_eval.data import (
     OPENIMAGES_URLS,
+    copy_images,
     download_openimages,
     load_coco,
     load_openimages,
@@ -322,9 +336,14 @@ assert sha256(VAL_ANNOTATIONS) == (
     "e8c7f7908f1d7278341fae127d0da654f102f11bd7b21d8aeefa635b8c810b6f"
 ), "Снимок аннотаций отличается от ДЗ №2"
 val_root = VAL_ANNOTATIONS.parent.parent
-VAL_IMAGES = next(
+INPUT_VAL_IMAGES = next(
     p for p in (val_root / "val2017", val_root / "images" / "val2017") if p.is_dir()
 )
+# Оценка проходит по val 9 раз (3 модели × 3 размера), поэтому оригиналы один раз
+# копируются на локальный диск без изменений, как в ДЗ №2.
+VAL_IMAGES = Path("/tmp/coco_val2017")
+failed_copies = copy_images(sorted(INPUT_VAL_IMAGES.glob("*.jpg")), VAL_IMAGES)
+assert not failed_copies, failed_copies[:5]
 coco = load_coco(VAL_ANNOTATIONS, VAL_IMAGES, TARGETS)
 print(len(coco.image_ids), "фото;", "положительных по классам:",
       dict(zip(TARGETS, coco.labels.sum(axis=0).tolist(), strict=True)))""",

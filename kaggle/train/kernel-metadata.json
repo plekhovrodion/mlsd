@@ -1,0 +1,15 @@
+{
+  "id": "rodionplekhov/photoquest-hw3-train-yolo11n",
+  "title": "photoquest-hw3-train-yolo11n",
+  "code_file": "02_train_yolo11n.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": ["nikitamanaenkov/microsoft-coco-2017"],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

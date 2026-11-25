@@ -157,6 +157,8 @@ def coco_to_yolo(
     negative_fraction: float = 0.1,
     val_fraction: float = 0.1,
     seed: int = 2026,
+    max_side: int | None = None,
+    workers: int = 32,
 ) -> dict[str, dict[str, int]]:
     """Готовит обучающую подвыборку COCO в формате YOLO: ``output_dir/{train,val}``.
 
@@ -164,7 +166,11 @@ def coco_to_yolo(
     фото без них, чтобы модель училась не срабатывать на посторонних сценах.
     Фото с crowd-разметкой целевого класса в негативы не попадают: предмет на них есть.
     Доля ``val_fraction`` фото откладывается для валидации при обучении.
-    Фото не копируются: создаются символические ссылки.
+
+    Без ``max_side`` создаются символические ссылки на исходные фото. С ``max_side``
+    фото копируются в ``output_dir`` и уменьшаются до этого размера по длинной стороне:
+    так обучение читает небольшие файлы с локального диска, а не с медленного
+    сетевого хранилища. Метки YOLO нормированы и от размера фото не зависят.
     """
     coco = json.loads(annotation_path.read_text(encoding="utf-8"))
     categories = {row["id"]: row["name"] for row in coco["categories"]}
@@ -198,17 +204,65 @@ def coco_to_yolo(
     for split, ids in (("train", selected[~is_val]), ("val", selected[is_val])):
         (output_dir / split / "images").mkdir(parents=True, exist_ok=True)
         (output_dir / split / "labels").mkdir(parents=True, exist_ok=True)
+        names = [images[image_id]["file_name"] for image_id in ids.tolist()]
+        sources = [image_dir / name for name in names]
+        targets_dir = output_dir / split / "images"
+        if max_side is None:
+            for source in sources:
+                link = targets_dir / source.name
+                if not link.exists():
+                    link.symlink_to(source.resolve())
+        else:
+            failed = copy_images(sources, targets_dir, max_side=max_side, workers=workers)
+            if failed:
+                raise OSError(f"Не удалось скопировать {len(failed)} фото, например {failed[0]}")
         positives = 0
-        for image_id in ids.tolist():
-            name = images[image_id]["file_name"]
-            link = output_dir / split / "images" / name
-            if not link.exists():
-                link.symlink_to((image_dir / name).resolve())
+        for image_id, name in zip(ids.tolist(), names):  # noqa: B905 — длины совпадают
             label = output_dir / split / "labels" / Path(name).with_suffix(".txt").name
             label.write_text("\n".join(lines.get(image_id, [])), encoding="utf-8")
             positives += image_id in lines
         stats[split] = {"positive_images": positives, "negative_images": len(ids) - positives}
     return stats
+
+
+def copy_images(
+    sources: Sequence[Path],
+    output_dir: Path,
+    max_side: int | None = None,
+    workers: int = 32,
+) -> list[Path]:
+    """Параллельно копирует фото в ``output_dir``, при ``max_side`` уменьшая их.
+
+    Уже скопированные файлы пропускаются, поэтому прерванное копирование можно
+    продолжить повторным вызовом. Возвращает пути, которые скопировать не удалось.
+    """
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def copy_one(source: Path) -> Path | None:
+        target = output_dir / source.name
+        if target.exists() and target.stat().st_size:
+            return None
+        temporary = target.with_suffix(".part")
+        try:
+            if max_side is None:
+                shutil.copyfile(source, temporary)
+            else:
+                from PIL import Image
+
+                with Image.open(source) as image:
+                    image = image.convert("RGB")
+                    image.thumbnail((max_side, max_side))
+                    image.save(temporary, format="JPEG", quality=95)
+            temporary.replace(target)
+        except OSError:
+            return source
+        return None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return [path for path in pool.map(copy_one, sources) if path is not None]
 
 
 def write_yolo_yaml(dataset_dir: Path, targets: Sequence[str] = tuple(HOME_CLASSES)) -> Path:
