@@ -94,6 +94,47 @@ def get_checkpoint(filename: str, folder: Path) -> Path:
         raise ValueError(f"Не совпал SHA-256 весов {filename}")
     return path'''
 
+CURVES = """import matplotlib.pyplot as plt
+
+history = pd.read_csv(RUN / "results.csv")
+history.columns = history.columns.str.strip()
+fig, axes = plt.subplots(1, 4, figsize=(18, 4))
+for axis, part in zip(axes[:3], ("box", "cls", "dfl"), strict=True):
+    axis.plot(history["epoch"], history[f"train/{part}_loss"], label="train")
+    axis.plot(history["epoch"], history[f"val/{part}_loss"], label="val")
+    axis.set(title=f"{part}_loss", xlabel="эпоха")
+    axis.legend()
+axes[3].plot(history["epoch"], history["metrics/mAP50(B)"], label="mAP@0.50")
+axes[3].plot(history["epoch"], history["metrics/mAP50-95(B)"], label="mAP@0.50:0.95")
+axes[3].set(title="Качество на val", xlabel="эпоха")
+axes[3].legend()
+fig.tight_layout()
+fig.savefig(OUTPUT / "training_curves.png", dpi=150)
+plt.show()
+history.to_csv(OUTPUT / "training_history.csv", index=False)
+display(history.tail(3))"""
+
+EXPORT = """EXPORTS = OUTPUT / "export"
+EXPORTS.mkdir(exist_ok=True)
+shutil.copy(BEST, EXPORTS / f"{RUN_NAME}.pt")
+export_rows = []
+for size in IMAGE_SIZES:
+    exported = Path(YOLO(str(BEST)).export(format="onnx", imgsz=size, simplify=True))
+    target = EXPORTS / f"{RUN_NAME}_{size}.onnx"
+    shutil.move(exported, target)
+    export_rows.append(
+        {"file": target.name, "imgsz": size, "MiB": target.stat().st_size / 2**20,
+         "sha256": sha256(target)}
+    )
+export_rows.append(
+    {"file": f"{RUN_NAME}.pt", "imgsz": 640,
+     "MiB": (EXPORTS / f"{RUN_NAME}.pt").stat().st_size / 2**20,
+     "sha256": sha256(EXPORTS / f"{RUN_NAME}.pt")}
+)
+exports = pd.DataFrame(export_rows)
+exports.to_csv(OUTPUT / "exports.csv", index=False)
+display(exports)"""
+
 TRAIN_CELLS = [
     (
         "markdown",
@@ -116,6 +157,7 @@ from photoquest_eval.data import coco_to_yolo, write_yolo_yaml
 
 OUTPUT = Path("/kaggle/working/hw3_train")
 OUTPUT.mkdir(parents=True, exist_ok=True)
+RUN_NAME = "yolo11n_home"
 
 # Гиперпараметры фиксируются до обучения и сохраняются в metadata.json.
 TRAIN_SETTINGS = {
@@ -180,13 +222,13 @@ train_started = time.perf_counter()
 results = model.train(
     data=str(DATASET_YAML),
     project=str(OUTPUT),
-    name="yolo11n_home",
+    name=RUN_NAME,
     exist_ok=True,
     plots=True,
     **{k: v for k, v in TRAIN_SETTINGS.items() if k != "base_model"},
 )
 train_seconds = time.perf_counter() - train_started
-RUN = OUTPUT / "yolo11n_home"
+RUN = OUTPUT / RUN_NAME
 BEST = RUN / "weights" / "best.pt"
 print(f"Обучение заняло {train_seconds / 3600:.2f} ч, лучшие веса: {BEST}")""",
     ),
@@ -198,55 +240,12 @@ print(f"Обучение заняло {train_seconds / 3600:.2f} ч, лучши�
 положения рамки (CIoU), `cls` — ошибка класса (бинарная кросс-энтропия),
 `dfl` — distribution focal loss для границ рамки.""",
     ),
-    (
-        "code",
-        """import matplotlib.pyplot as plt
-
-history = pd.read_csv(RUN / "results.csv")
-history.columns = history.columns.str.strip()
-fig, axes = plt.subplots(1, 4, figsize=(18, 4))
-for axis, part in zip(axes[:3], ("box", "cls", "dfl"), strict=True):
-    axis.plot(history["epoch"], history[f"train/{part}_loss"], label="train")
-    axis.plot(history["epoch"], history[f"val/{part}_loss"], label="val")
-    axis.set(title=f"{part}_loss", xlabel="эпоха")
-    axis.legend()
-axes[3].plot(history["epoch"], history["metrics/mAP50(B)"], label="mAP@0.50")
-axes[3].plot(history["epoch"], history["metrics/mAP50-95(B)"], label="mAP@0.50:0.95")
-axes[3].set(title="Качество на val", xlabel="эпоха")
-axes[3].legend()
-fig.tight_layout()
-fig.savefig(OUTPUT / "training_curves.png", dpi=150)
-plt.show()
-history.to_csv(OUTPUT / "training_history.csv", index=False)
-display(history.tail(3))""",
-    ),
+    ("code", CURVES),
     (
         "markdown",
         "## Экспорт в ONNX\n\nДля браузера в ДЗ №4 готовим файлы для трёх размеров входа.",
     ),
-    (
-        "code",
-        """EXPORTS = OUTPUT / "export"
-EXPORTS.mkdir(exist_ok=True)
-shutil.copy(BEST, EXPORTS / "yolo11n_home.pt")
-export_rows = []
-for size in IMAGE_SIZES:
-    exported = Path(YOLO(str(BEST)).export(format="onnx", imgsz=size, simplify=True))
-    target = EXPORTS / f"yolo11n_home_{size}.onnx"
-    shutil.move(exported, target)
-    export_rows.append(
-        {"file": target.name, "imgsz": size, "MiB": target.stat().st_size / 2**20,
-         "sha256": sha256(target)}
-    )
-export_rows.append(
-    {"file": "yolo11n_home.pt", "imgsz": 640,
-     "MiB": (EXPORTS / "yolo11n_home.pt").stat().st_size / 2**20,
-     "sha256": sha256(EXPORTS / "yolo11n_home.pt")}
-)
-exports = pd.DataFrame(export_rows)
-exports.to_csv(OUTPUT / "exports.csv", index=False)
-display(exports)""",
-    ),
+    ("code", EXPORT),
     (
         "code",
         """metadata = {
@@ -282,23 +281,223 @@ print(json.dumps(metadata, indent=2, ensure_ascii=False))""",
     ),
 ]
 
+HARDNEG_CELLS = [
+    (
+        "markdown",
+        """# ДЗ №3. YOLO11n на трудных негативах Open Images
+
+Оценка `03_evaluate_models.ipynb` показала, что порог, подобранный на COCO, почти не защищает
+от похожих предметов: на проверенных негативах Open Images (банка вместо бутылки) FAR
+около 62% у всех моделей. Первое дообучение на COCO (`02_train_yolo11n.ipynb`) этого
+не исправило: те же фото и метки, на которых YOLO11n уже обучен.
+
+Здесь к подвыборке COCO train добавляются фото Open Images **train** (test остаётся
+для оценки):
+
+- **трудные негативы** — проверенная человеком отрицательная метка класса; такие фото
+  попали в разметку как кандидаты классификатора, то есть на них похожий предмет;
+- **положительные** — проверенная положительная метка с рамками, чтобы модель
+  не выучила правило «стиль Open Images — предметов нет».
+
+Фото, где у проверенно положительного класса нет рамок, пропускаются. Непроверенные
+классы на фото Open Images остаются риском шума в разметке.
+
+Чтобы не повторить провал первых эпох прошлого обучения (mAP50 на val упал с 0,33 до 0,18),
+оптимизатор задан явно: SGD с lr0 = 0,002, разогрев 1 эпоха, первые 10 слоёв заморожены.
+
+**Критерий успеха (зафиксирован до запуска).** На Open Images test FAR при пороге с COCO
+снижается с 62% хотя бы до 40% (в среднем по классам, вход 640), а recall на COCO val2017
+при консервативном пороге теряет не больше 2 п.п. относительно предобученного YOLO11n (83,1%).
+
+**Настройки Kaggle:** Accelerator — GPU T4, Internet — On.
+**Входные данные:** датасет COCO 2017 с `train2017` и `instances_train2017.json`.""",
+    ),
+    ("code", INSTALL),
+    ("code", COMMON),
+    (
+        "code",
+        """from ultralytics import YOLO
+
+from photoquest_eval.data import (
+    OPENIMAGES_URLS,
+    coco_to_yolo,
+    download_openimages,
+    openimages_to_yolo,
+    sample_hard_negatives,
+    scan_openimages_boxes,
+    scan_openimages_labels,
+    write_yolo_yaml,
+)
+
+OUTPUT = Path("/kaggle/working/hw3_train_hardneg")
+OUTPUT.mkdir(parents=True, exist_ok=True)
+RUN_NAME = "yolo11n_hardneg"
+
+# Гиперпараметры фиксируются до обучения и сохраняются в metadata.json.
+TRAIN_SETTINGS = {
+    "base_model": "yolo11n.pt",
+    "epochs": 30,
+    "patience": 10,
+    "imgsz": 640,
+    "batch": 32,
+    "optimizer": "SGD",
+    "lr0": 0.002,
+    "lrf": 0.1,
+    "warmup_epochs": 1,
+    "freeze": 10,
+    "seed": SEED,
+    "deterministic": True,
+    "workers": 4,
+    "save_period": 5,
+}
+DATA_SETTINGS = {
+    "negative_fraction": 0.1,
+    "val_fraction": 0.1,
+    "seed": SEED,
+    "max_side": TRAIN_SETTINGS["imgsz"],
+}
+OI_TRAIN_SAMPLE = {"positives_per_class": 800, "negatives_per_class": 1500, "seed": SEED}""",
+    ),
+    ("markdown", "## Данные\\n\\n### COCO train2017 — как в `02_train_yolo11n.ipynb`"),
+    (
+        "code",
+        """paths = sorted(Path("/kaggle/input").rglob("instances_train2017.json"))
+if not paths:
+    raise FileNotFoundError("Добавьте во входные данные датасет COCO 2017 с train2017")
+TRAIN_ANNOTATIONS = paths[0]
+coco_root = TRAIN_ANNOTATIONS.parent.parent
+TRAIN_IMAGES = next(
+    p for p in (coco_root / "train2017", coco_root / "images" / "train2017") if p.is_dir()
+)
+annotation_hash = sha256(TRAIN_ANNOTATIONS)
+DATASET = Path("/tmp/hardneg_yolo")
+copy_started = time.perf_counter()
+coco_stats = coco_to_yolo(TRAIN_ANNOTATIONS, TRAIN_IMAGES, DATASET, TARGETS, **DATA_SETTINGS)
+print(f"COCO: {(time.perf_counter() - copy_started) / 60:.1f} мин")
+display(pd.DataFrame(coco_stats).T)""",
+    ),
+    (
+        "markdown",
+        """### Open Images train
+
+Файлы разметки train весят 2,7 и 2,3 ГБ; из них читаются только строки 10 целевых классов.""",
+    ),
+    (
+        "code",
+        """OI_CACHE = Path("/tmp/openimages_train")
+OI_CACHE.mkdir(exist_ok=True)
+oi_started = time.perf_counter()
+csv_paths = {}
+for key in ("train_image_labels", "train_boxes"):
+    csv_paths[key] = OI_CACHE / Path(OPENIMAGES_URLS[key]).name
+    if not csv_paths[key].exists():
+        urllib.request.urlretrieve(OPENIMAGES_URLS[key], csv_paths[key])
+oi_status = scan_openimages_labels(csv_paths["train_image_labels"], TARGETS)
+availability = pd.DataFrame(
+    {
+        "verified_positive": [sum(s.get(t) == 1 for s in oi_status.values()) for t in TARGETS],
+        "verified_negative": [sum(s.get(t) == 0 for s in oi_status.values()) for t in TARGETS],
+    },
+    index=TARGETS,
+)
+display(availability)
+oi_ids = sample_hard_negatives(oi_status, TARGETS, **OI_TRAIN_SAMPLE)
+oi_boxes = scan_openimages_boxes(csv_paths["train_boxes"], oi_ids, TARGETS)
+failed = download_openimages(
+    oi_ids, OI_CACHE / "images", max_side=TRAIN_SETTINGS["imgsz"], split="train"
+)
+oi_stats = openimages_to_yolo(
+    oi_ids, oi_status, oi_boxes, OI_CACHE / "images", DATASET, TARGETS,
+    DATA_SETTINGS["val_fraction"], SEED,
+)
+oi_seconds = time.perf_counter() - oi_started
+print(f"Open Images: выбрано {len(oi_ids):,}, не скачалось {len(failed)}, "
+      f"{oi_seconds / 60:.1f} мин")
+display(pd.DataFrame(oi_stats).T)
+pd.Series(oi_ids, name="ImageID").to_csv(OUTPUT / "openimages_train_ids.csv", index=False)
+DATASET_YAML = write_yolo_yaml(DATASET, TARGETS)""",
+    ),
+    ("markdown", "## Обучение"),
+    ("code", CHECKPOINTS),
+    (
+        "code",
+        """base = get_checkpoint(TRAIN_SETTINGS["base_model"], OUTPUT / "pretrained")
+model = YOLO(str(base))
+train_started = time.perf_counter()
+results = model.train(
+    data=str(DATASET_YAML),
+    project=str(OUTPUT),
+    name=RUN_NAME,
+    exist_ok=True,
+    plots=True,
+    **{k: v for k, v in TRAIN_SETTINGS.items() if k != "base_model"},
+)
+train_seconds = time.perf_counter() - train_started
+RUN = OUTPUT / RUN_NAME
+BEST = RUN / "weights" / "best.pt"
+print(f"Обучение заняло {train_seconds / 3600:.2f} ч, лучшие веса: {BEST}")""",
+    ),
+    ("markdown", "## Кривые обучения"),
+    ("code", CURVES),
+    ("markdown", "## Экспорт в ONNX"),
+    ("code", EXPORT),
+    (
+        "code",
+        """metadata = {
+    "repo_ref": REPO_REF,
+    "repo_commit": REPO_COMMIT,
+    "train_annotations_sha256": annotation_hash,
+    "targets": list(TARGETS),
+    "data_settings": DATA_SETTINGS,
+    "coco_split_stats": coco_stats,
+    "openimages_train_sample": OI_TRAIN_SAMPLE,
+    "openimages_train_images": len(oi_ids),
+    "openimages_failed_downloads": len(failed),
+    "openimages_split_stats": oi_stats,
+    "openimages_csv_sha256": {key: sha256(path) for key, path in csv_paths.items()},
+    "train_settings": TRAIN_SETTINGS,
+    "best_epoch": int(history.loc[history["metrics/mAP50-95(B)"].idxmax(), "epoch"]),
+    "epochs_run": int(history["epoch"].max()),
+    "openimages_prep_seconds": round(oi_seconds, 1),
+    "train_seconds": round(train_seconds, 1),
+    "gpu": torch.cuda.get_device_name(0),
+    "python": platform.python_version(),
+    "packages": package_versions(
+        "torch", "ultralytics", "numpy", "onnx", "onnxruntime", "onnxslim"
+    ),
+    "started_utc": STARTED_UTC,
+    "elapsed_seconds": round(time.perf_counter() - STARTED, 1),
+}
+(OUTPUT / "metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
+archive = Path(f"/kaggle/working/{OUTPUT.name}_results.zip")
+with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+    for path in sorted(OUTPUT.rglob("*")):
+        relative = path.relative_to(OUTPUT)
+        if path.is_file() and not {"pretrained", "weights"} & set(relative.parts):
+            z.write(path, relative)
+print(json.dumps(metadata, indent=2, ensure_ascii=False))""",
+    ),
+]
+
 EVAL_CELLS = [
     (
         "markdown",
         """# ДЗ №3. Оценка baseline и основной модели
 
-Сравниваем три модели по одному протоколу:
+Сравниваем модели по одному протоколу:
 
 - **YOLOv8n** — предобученный baseline;
 - **YOLO11n** — предобученный, показывает вклад архитектуры;
-- **YOLO11n-home** — дообученный на 10 домашних классах (`02_train_yolo11n.ipynb`).
+- **YOLO11n-home** — дообученный на 10 домашних классах COCO (`02_train_yolo11n.ipynb`);
+- **YOLO11n-hardneg** — дообученный с трудными негативами Open Images train
+  (`04_train_yolo11n_hardneg.ipynb`), если его вывод подключён к ноутбуку.
 
 Каждая модель проверяется на размерах входа 640, 416 и 320 и на двух наборах:
 COCO val2017 (протокол ДЗ №2, пороги по фолдам) и Open Images V7 test
 (перенос на другой источник; пороги взяты с COCO и здесь не подбираются).
 
 **Настройки Kaggle:** GPU T4, Internet — On.
-**Входные данные:** COCO 2017 val (как в ДЗ №2) и вывод ноутбука обучения.""",
+**Входные данные:** COCO 2017 val (как в ДЗ №2) и выводы ноутбуков обучения.""",
     ),
     ("code", INSTALL),
     ("code", COMMON),
@@ -339,7 +538,7 @@ val_root = VAL_ANNOTATIONS.parent.parent
 INPUT_VAL_IMAGES = next(
     p for p in (val_root / "val2017", val_root / "images" / "val2017") if p.is_dir()
 )
-# Оценка проходит по val 9 раз (3 модели × 3 размера), поэтому оригиналы один раз
+# Оценка проходит по val много раз (модели × 3 размера), поэтому оригиналы один раз
 # копируются на локальный диск без изменений, как в ДЗ №2.
 VAL_IMAGES = Path("/tmp/coco_val2017")
 failed_copies = copy_images(sorted(INPUT_VAL_IMAGES.glob("*.jpg")), VAL_IMAGES)
@@ -403,14 +602,19 @@ print("Фото с ненулевым Rotation:", int(manifest["Rotation"].filln
     ("code", CHECKPOINTS),
     (
         "code",
-        """FT_PATHS = sorted(Path("/kaggle/input").rglob("yolo11n_home.pt"))
-if not FT_PATHS:
-    raise FileNotFoundError("Добавьте во входные данные вывод ноутбука 02_train_yolo11n")
-FT_DIR = FT_PATHS[0].parent
+        """FINE_TUNED = {}
+for name in ("yolo11n_home", "yolo11n_hardneg"):
+    found = sorted(Path("/kaggle/input").rglob(f"{name}.pt"))
+    if found:
+        FINE_TUNED[name] = found[0]
+if not FINE_TUNED:
+    raise FileNotFoundError("Добавьте во входные данные вывод ноутбука обучения (02 или 04)")
+# Разбор ошибок — для последней дообученной модели.
+MAIN_MODEL = list(FINE_TUNED)[-1]
 MODELS = {
     "yolov8n": get_checkpoint("yolov8n.pt", OUTPUT / "pretrained"),
     "yolo11n": get_checkpoint("yolo11n.pt", OUTPUT / "pretrained"),
-    "yolo11n_home": FT_PATHS[0],
+    **FINE_TUNED,
 }
 model_hashes = {name: sha256(path) for name, path in MODELS.items()}
 model_hashes""",
@@ -484,8 +688,8 @@ display(coco_summary.round(4))""",
         """## Пороги для переноса и для игры
 
 Итоговые пороги считаются по всем отрицательным фото COCO val2017 с консервативным
-протоколом `confidence_95pct`. Для YOLO11n-home они сохраняются в `thresholds_<size>.json`:
-этот файл в ДЗ №4 загрузит браузер.""",
+протоколом `confidence_95pct`. Для дообученных моделей они сохраняются
+в `thresholds_<model>_<size>.json`: такой файл в ДЗ №4 загрузит браузер.""",
     ),
     (
         "code",
@@ -496,9 +700,10 @@ for name in MODELS:
             coco, scores[("coco", name, size)], f"{name}-{model_hashes[name][:12]}",
             size, RULE_VERSION,
         )
-for size in IMAGE_SIZES:
-    thresholds[("yolo11n_home", size)].to_json(OUTPUT / f"thresholds_{size}.json")
-print((OUTPUT / "thresholds_640.json").read_text())""",
+for name in FINE_TUNED:
+    for size in IMAGE_SIZES:
+        thresholds[(name, size)].to_json(OUTPUT / f"thresholds_{name}_{size}.json")
+print((OUTPUT / f"thresholds_{MAIN_MODEL}_640.json").read_text())""",
     ),
     (
         "markdown",
@@ -534,11 +739,11 @@ display(oi_summary.round(4))""",
     ),
     (
         "code",
-        """pairs = [
-    ("yolo11n_home", "yolov8n"),
-    ("yolo11n_home", "yolo11n"),
-    ("yolo11n", "yolov8n"),
-]
+        """pairs = [("yolo11n", "yolov8n")]
+for name in FINE_TUNED:
+    pairs += [(name, "yolov8n"), (name, "yolo11n")]
+if len(FINE_TUNED) == 2:
+    pairs.append(("yolo11n_hardneg", "yolo11n_home"))
 diff_rows = []
 for a, b in pairs:
     for column, target in enumerate(TARGETS):
@@ -614,7 +819,7 @@ plt.show()""",
     ),
     (
         "markdown",
-        """## Разбор ошибок YOLO11n-home
+        """## Разбор ошибок дообученной модели
 
 Для рюкзака, телефона и бутылки берём на Open Images (640) ложное подтверждение
 с наибольшим score и пропуск с наименьшим. Авторы и лицензии показанных фото —
@@ -623,13 +828,13 @@ plt.show()""",
     (
         "code",
         """ERROR_TARGETS = ["backpack", "cell phone", "bottle"]
-oi_scores = scores[("openimages", "yolo11n_home", 640)]
+oi_scores = scores[("openimages", MAIN_MODEL, 640)]
 records = []
 for target in ERROR_TARGETS:
     column = TARGETS.index(target)
     known = oi.mask(column)
     truth = oi.labels[:, column] == 1
-    predicted = oi_predictions[("yolo11n_home", 640)][target]
+    predicted = oi_predictions[(MAIN_MODEL, 640)][target]
     for kind, mask in (
         ("false_positive", predicted & ~truth & known),
         ("false_negative", ~predicted & truth & known),
@@ -638,7 +843,7 @@ for target in ERROR_TARGETS:
         for row in index[np.argsort(oi_scores[index, column], kind="stable")]:
             records.append({"target": target, "error_type": kind,
                             "image_id": oi.image_ids[row], "score": float(oi_scores[row, column]),
-                            "cutoff": thresholds[("yolo11n_home", 640)].rules[target].high})
+                            "cutoff": thresholds[(MAIN_MODEL, 640)].rules[target].high})
 error_cases = pd.DataFrame(records).merge(manifest, left_on="image_id", right_on="ImageID")
 error_cases.to_csv(OUTPUT / "error_cases.csv", index=False)
 examples = pd.concat(
@@ -654,7 +859,7 @@ for axis, row in zip(axes.flat, examples.itertuples(), strict=True):
     with Image.open(OI_DIR / "images" / f"{row.image_id}.jpg") as image:
         axis.imshow(image.convert("RGB"))
     kind = "Ложное подтверждение" if row.error_type == "false_positive" else "Пропуск"
-    axis.set_title(f"{row.target} — {kind}\\n{row.image_id}, score {row.score:.3f}, "
+    axis.set_title(f"{MAIN_MODEL}: {row.target} — {kind}\\n{row.image_id}, score {row.score:.3f}, "
                    f"порог {row.cutoff:.3f}\\n© {row.Author}, CC BY 2.0", fontsize=9)
     axis.axis("off")
 fig.tight_layout()
@@ -667,7 +872,7 @@ display(error_cases.groupby(["target", "error_type"]).size().unstack())""",
         """## Совпадение ONNX и PyTorch
 
 Для ДЗ №4 модель будет работать в браузере из ONNX. Сравниваем score и решения
-ONNX-версий YOLO11n-home с PyTorch на 300 фото COCO val2017.""",
+ONNX-версий дообученных моделей с PyTorch на 300 фото COCO val2017.""",
     ),
     (
         "code",
@@ -675,18 +880,21 @@ ONNX-версий YOLO11n-home с PyTorch на 300 фото COCO val2017.""",
 sample = sorted(rng.choice(len(coco.image_paths), 300, replace=False).tolist())
 sample_paths = [coco.image_paths[i] for i in sample]
 parity_rows = []
-for size in IMAGE_SIZES:
-    onnx_path = FT_DIR / f"yolo11n_home_{size}.onnx"
-    onnx_scores = predict_scores(onnx_path, sample_paths, TARGETS, size, batch_size=1,
-                                 device="cpu", **YOLO_SETTINGS)
-    torch_scores = scores[("coco", "yolo11n_home", size)][sample]
-    rule = thresholds[("yolo11n_home", size)]
-    cutoffs = np.array([rule.rules[t].high for t in TARGETS])
-    parity_rows.append(
-        {"image_size": size, "max_abs_score_diff": float(np.abs(onnx_scores - torch_scores).max()),
-         "decision_agreement": float(((onnx_scores > cutoffs) == (torch_scores > cutoffs)).mean()),
-         "onnx_sha256": sha256(onnx_path)}
-    )
+for name, weights in FINE_TUNED.items():
+    for size in IMAGE_SIZES:
+        onnx_path = weights.parent / f"{name}_{size}.onnx"
+        onnx_scores = predict_scores(onnx_path, sample_paths, TARGETS, size, batch_size=1,
+                                     device="cpu", **YOLO_SETTINGS)
+        torch_scores = scores[("coco", name, size)][sample]
+        rule = thresholds[(name, size)]
+        cutoffs = np.array([rule.rules[t].high for t in TARGETS])
+        parity_rows.append(
+            {"model": name, "image_size": size,
+             "max_abs_score_diff": float(np.abs(onnx_scores - torch_scores).max()),
+             "decision_agreement": float(
+                 ((onnx_scores > cutoffs) == (torch_scores > cutoffs)).mean()),
+             "onnx_sha256": sha256(onnx_path)}
+        )
 parity = pd.DataFrame(parity_rows)
 parity.to_csv(OUTPUT / "onnx_parity.csv", index=False)
 display(parity)""",
@@ -748,3 +956,4 @@ def build(cells, path: Path) -> None:
 if __name__ == "__main__":
     build(TRAIN_CELLS, HERE / "02_train_yolo11n.ipynb")
     build(EVAL_CELLS, HERE / "03_evaluate_models.ipynb")
+    build(HARDNEG_CELLS, HERE / "04_train_yolo11n_hardneg.ipynb")

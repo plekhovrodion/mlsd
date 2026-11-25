@@ -38,6 +38,18 @@ OPENIMAGES_MIDS = {
 }
 
 
+def _target_mids(targets: Sequence[str]) -> tuple[dict[str, str], dict[str, str]]:
+    """MID → класс (с дочерними MID) и класс → основной MID."""
+    mid_to_target: dict[str, str] = {}
+    main_mid: dict[str, str] = {}
+    for target in targets:
+        mids = OPENIMAGES_MIDS[HOME_CLASSES[target]]
+        main_mid[target] = mids[0]
+        for mid in mids:
+            mid_to_target[mid] = target
+    return mid_to_target, main_mid
+
+
 @dataclass
 class EvalSet:
     """Набор для оценки присутствия классов."""
@@ -104,13 +116,7 @@ def load_openimages(
     Учитываются только фото, которые есть в ``image_dir``.
     """
     available = {path.stem: path for path in image_dir.glob("*.jpg")}
-    mid_to_target: dict[str, str] = {}
-    main_mid: dict[str, str] = {}
-    for target in targets:
-        mids = OPENIMAGES_MIDS[HOME_CLASSES[target]]
-        main_mid[target] = mids[0]
-        for mid in mids:
-            mid_to_target[mid] = target
+    mid_to_target, main_mid = _target_mids(targets)
     status: dict[tuple[str, str], int] = {}
     with image_labels_csv.open(encoding="utf-8") as stream:
         for row in csv.DictReader(stream):
@@ -281,7 +287,11 @@ OPENIMAGES_URLS = {
         "https://storage.googleapis.com/openimages/v7/oidv7-test-annotations-human-imagelabels.csv"
     ),
     "boxes": "https://storage.googleapis.com/openimages/v5/test-annotations-bbox.csv",
-    "image": "https://open-images-dataset.s3.amazonaws.com/test/{image_id}.jpg",
+    "train_image_labels": (
+        "https://storage.googleapis.com/openimages/v7/oidv7-train-annotations-human-imagelabels.csv"
+    ),
+    "train_boxes": "https://storage.googleapis.com/openimages/v6/oidv6-train-annotations-bbox.csv",
+    "image": "https://open-images-dataset.s3.amazonaws.com/{split}/{image_id}.jpg",
 }
 
 
@@ -299,13 +309,7 @@ def sample_openimages(
     """
     positives: dict[str, set[str]] = defaultdict(set)
     negatives: dict[str, set[str]] = defaultdict(set)
-    mid_to_target = {}
-    main_mid = {}
-    for target in targets:
-        mids = OPENIMAGES_MIDS[HOME_CLASSES[target]]
-        main_mid[target] = mids[0]
-        for mid in mids:
-            mid_to_target[mid] = target
+    mid_to_target, main_mid = _target_mids(targets)
     with image_labels_csv.open(encoding="utf-8") as stream:
         for row in csv.DictReader(stream):
             target = mid_to_target.get(row["LabelName"])
@@ -333,8 +337,9 @@ def download_openimages(
     image_dir: Path,
     max_side: int = 1024,
     workers: int = 32,
+    split: str = "test",
 ) -> list[str]:
-    """Скачивает фото Open Images test. Возвращает ID, которые скачать не удалось.
+    """Скачивает фото Open Images. Возвращает ID, которые скачать не удалось.
 
     Оригиналы весят мегабайты, поэтому фото уменьшаются до ``max_side`` по длинной
     стороне. Рамки Open Images нормированы и от размера не зависят.
@@ -352,7 +357,7 @@ def download_openimages(
         if path.exists() and path.stat().st_size:
             return None
         try:
-            url = OPENIMAGES_URLS["image"].format(image_id=image_id)
+            url = OPENIMAGES_URLS["image"].format(split=split, image_id=image_id)
             with urllib.request.urlopen(url, timeout=60) as response:
                 payload = response.read()
             with Image.open(io.BytesIO(payload)) as image:
@@ -367,3 +372,132 @@ def download_openimages(
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return [image_id for image_id in pool.map(fetch, image_ids) if image_id]
+
+
+def _filtered_rows(path: Path, label_names: set[str]):
+    """Строки CSV Open Images с нужными ``LabelName``.
+
+    Файлы train весят гигабайты, поэтому строки отбираются по полю LabelName
+    до разбора в словарь. В CSV Open Images нет кавычек и запятых внутри полей.
+    """
+    with path.open(encoding="utf-8") as stream:
+        header = stream.readline().rstrip("\n").split(",")
+        label = header.index("LabelName")
+        for line in stream:
+            parts = line.rstrip("\n").split(",")
+            if len(parts) > label and parts[label] in label_names:
+                yield dict(zip(header, parts))  # noqa: B905 — длина строки = длине заголовка
+
+
+def scan_openimages_labels(
+    image_labels_csv: Path, targets: Sequence[str] = tuple(HOME_CLASSES)
+) -> dict[str, dict[str, int]]:
+    """Проверенные метки целевых классов: фото → {класс: POSITIVE | NEGATIVE}.
+
+    Положительная метка дочернего MID делает класс положительным. Отрицательной
+    считается только проверенная метка основного MID, если положительной нет.
+    """
+    mid_to_target, main_mid = _target_mids(targets)
+    status: dict[str, dict[str, int]] = defaultdict(dict)
+    for row in _filtered_rows(image_labels_csv, set(mid_to_target)):
+        target = mid_to_target[row["LabelName"]]
+        current = status[row["ImageID"]]
+        if float(row["Confidence"]) > 0:
+            current[target] = POSITIVE
+        elif row["LabelName"] == main_mid[target] and current.get(target) != POSITIVE:
+            current[target] = NEGATIVE
+    return dict(status)
+
+
+def sample_hard_negatives(
+    status: dict[str, dict[str, int]],
+    targets: Sequence[str] = tuple(HOME_CLASSES),
+    positives_per_class: int = 800,
+    negatives_per_class: int = 1500,
+    seed: int = 2026,
+) -> list[str]:
+    """Выборка Open Images train для обучения на трудных негативах.
+
+    Проверенная отрицательная метка в Open Images — кандидат автоматического
+    классификатора, которого отклонил человек: на таких фото есть похожий предмет
+    (банка вместо бутылки). Для каждого класса берётся до ``negatives_per_class``
+    таких фото и до ``positives_per_class`` фото с проверенной положительной меткой,
+    чтобы модель не выучила правило «стиль Open Images — предметов нет».
+    """
+    rng = np.random.default_rng(seed)
+    chosen: set[str] = set()
+    for target in targets:
+        for value, limit in ((POSITIVE, positives_per_class), (NEGATIVE, negatives_per_class)):
+            pool = sorted(i for i, labels in status.items() if labels.get(target) == value)
+            take = min(limit, len(pool))
+            chosen.update(pool[i] for i in rng.choice(len(pool), take, replace=False))
+    return sorted(chosen)
+
+
+def scan_openimages_boxes(
+    boxes_csv: Path,
+    image_ids: Sequence[str],
+    targets: Sequence[str] = tuple(HOME_CLASSES),
+) -> dict[tuple[str, str], list[Box]]:
+    """Рамки целевых классов (с дочерними MID) для выбранных фото."""
+    mid_to_target, _ = _target_mids(targets)
+    wanted = set(image_ids)
+    boxes: dict[tuple[str, str], list[Box]] = defaultdict(list)
+    for row in _filtered_rows(boxes_csv, set(mid_to_target)):
+        if row["ImageID"] not in wanted:
+            continue
+        boxes[(row["ImageID"], mid_to_target[row["LabelName"]])].append(
+            (float(row["XMin"]), float(row["YMin"]), float(row["XMax"]), float(row["YMax"]))
+        )
+    return dict(boxes)
+
+
+def openimages_to_yolo(
+    image_ids: Sequence[str],
+    status: dict[str, dict[str, int]],
+    boxes: dict[tuple[str, str], list[Box]],
+    image_dir: Path,
+    output_dir: Path,
+    targets: Sequence[str] = tuple(HOME_CLASSES),
+    val_fraction: float = 0.1,
+    seed: int = 2026,
+) -> dict[str, dict[str, int]]:
+    """Добавляет фото Open Images в каталог YOLO из ``coco_to_yolo``.
+
+    Фото пропускается, если его нет в ``image_dir`` или если у проверенно
+    положительного класса нет рамок: без рамки предмет стал бы фоном и модель
+    училась бы его не замечать. Имена файлов получают префикс ``oi_``.
+    """
+    class_index = {name: i for i, name in enumerate(targets)}
+    rng = np.random.default_rng(seed)
+    stats = {
+        split: {"positive_images": 0, "negative_images": 0, "no_boxes": 0, "missing": 0}
+        for split in ("train", "val")
+    }
+    for image_id in image_ids:
+        split = "val" if rng.random() < val_fraction else "train"
+        source = image_dir / f"{image_id}.jpg"
+        if not source.is_file():
+            stats[split]["missing"] += 1
+            continue
+        positives = [t for t, v in status.get(image_id, {}).items() if v == POSITIVE]
+        if any((image_id, t) not in boxes for t in positives):
+            stats[split]["no_boxes"] += 1
+            continue
+        lines = []
+        for target in positives:
+            for x_min, y_min, x_max, y_max in boxes[(image_id, target)]:
+                lines.append(
+                    f"{class_index[target]} {(x_min + x_max) / 2:.6f} {(y_min + y_max) / 2:.6f} "
+                    f"{x_max - x_min:.6f} {y_max - y_min:.6f}"
+                )
+        images = output_dir / split / "images"
+        labels = output_dir / split / "labels"
+        images.mkdir(parents=True, exist_ok=True)
+        labels.mkdir(parents=True, exist_ok=True)
+        link = images / f"oi_{image_id}.jpg"
+        if not link.exists():
+            link.symlink_to(source.resolve())
+        (labels / f"oi_{image_id}.txt").write_text("\n".join(lines), encoding="utf-8")
+        stats[split]["positive_images" if lines else "negative_images"] += 1
+    return stats
