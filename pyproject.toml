@@ -4,6 +4,20 @@ version = "0.1.0"
 description = "Английский вокруг нас: игра с проверкой по фото для знакомства с английскими словами"
 readme = "README.md"
 requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "scikit-learn>=1.5",
+]
+
+[project.optional-dependencies]
+# Инференс и обучение YOLO (Kaggle, локальный GPU).
+yolo = ["ultralytics==8.4.207"]
+dev = ["pytest>=8", "pre-commit>=4"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
