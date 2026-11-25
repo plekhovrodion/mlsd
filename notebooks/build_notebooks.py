@@ -358,7 +358,7 @@ DATA_SETTINGS = {
 }
 OI_TRAIN_SAMPLE = {"positives_per_class": 800, "negatives_per_class": 1500, "seed": SEED}""",
     ),
-    ("markdown", "## Данные\\n\\n### COCO train2017 — как в `02_train_yolo11n.ipynb`"),
+    ("markdown", "## Данные\n\n### COCO train2017 — как в `02_train_yolo11n.ipynb`"),
     (
         "code",
         """paths = sorted(Path("/kaggle/input").rglob("instances_train2017.json"))
