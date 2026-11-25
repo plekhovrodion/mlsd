@@ -30,6 +30,19 @@
 └── README.md
 ```
 
+## Установка и проверки
+
+Нужен Python 3.11+.
+
+```bash
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install pre-commit
+pre-commit install            # хуки ruff и проверки файлов перед каждым коммитом
+pre-commit run --all-files    # разовая проверка всего репозитория, как в CI
+```
+
+Те же проверки запускает GitHub Actions на каждый pull request (`.github/workflows/ci.yml`).
+
 ## Автор
 
 Плехов Родион — [@plekhovrodion](https://github.com/plekhovrodion)
