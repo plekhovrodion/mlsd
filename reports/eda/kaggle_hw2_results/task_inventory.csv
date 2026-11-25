@@ -1,0 +1,59 @@
+room,item,english_prompt,coco_label
+Кухня,бутылка,bottle,bottle
+Кухня,холодильник,refrigerator,refrigerator
+Кухня,микроволновка,microwave,microwave
+Кухня,чайник,kettle,
+Кухня,тостер,toaster,toaster
+Кухня,сковородка,frying pan,
+Комната,кровать,bed,bed
+Комната,телевизор,television,tv
+Комната,часы,clock,clock
+Комната,комнатное растение,potted plant,potted plant
+Комната,плюшевый мишка,teddy bear,teddy bear
+Комната,ваза,vase,vase
+Комната,гитара,guitar,
+Комната,глобус,globe,
+Школа,ножницы,scissors,scissors
+Школа,ноутбук,laptop,laptop
+Школа,телефон,cell phone,cell phone
+Школа,клавиатура,keyboard,keyboard
+Школа,компьютерная мышка,computer mouse,mouse
+Школа,калькулятор,calculator,
+Школа,ластик,eraser,
+Школа,пенал,pencil case,
+Школа,клей,glue,
+Ванная,раковина,sink,sink
+Ванная,унитаз,toilet,toilet
+Ванная,зубная щётка,toothbrush,toothbrush
+Ванная,шампунь,shampoo bottle,
+Ванная,расчёска,comb,
+Ванная,мыло,bar of soap,
+Ванная,зубная паста,toothpaste,
+Ванная,резиновая уточка,rubber duck,
+Ванная,ванна,bathtub,
+Прихожая,зонт,umbrella,umbrella
+Прихожая,обувь,shoes,
+Прихожая,рюкзак,backpack,backpack
+Прихожая,скейтборд,skateboard,skateboard
+Прихожая,перчатки,gloves,
+Прихожая,галстук,tie,tie
+Еда,банан,banana,banana
+Еда,яблоко,apple,apple
+Еда,апельсин,orange,orange
+Еда,брокколи,broccoli,broccoli
+Еда,пицца,pizza,pizza
+Еда,бутерброд,sandwich,sandwich
+Еда,торт,cake,cake
+Еда,яйцо,egg,
+Еда,сыр,cheese,
+Еда,помидор,tomato,
+Двор и лес,велосипед,bicycle,bicycle
+Двор и лес,машина,car,car
+Двор и лес,автобус,bus,bus
+Двор и лес,собака,dog,dog
+Двор и лес,кошка,cat,cat
+Двор и лес,птица,bird,bird
+Двор и лес,гриб,mushroom,
+Двор и лес,воздушный змей,kite,kite
+Двор и лес,самолёт,airplane,airplane
+Двор и лес,поезд,train,train
