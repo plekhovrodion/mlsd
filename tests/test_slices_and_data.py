@@ -9,6 +9,8 @@ from photoquest_eval.data import (
     coco_to_yolo,
     load_coco,
     load_openimages,
+    sample_openimages,
+    write_yolo_yaml,
 )
 from photoquest_eval.slices import (
     BACKGROUND,
@@ -64,11 +66,46 @@ def test_coco_to_yolo(tmp_path):
     _write_coco(annotations)
     for name in ("1.jpg", "2.jpg"):
         (tmp_path / name).write_bytes(b"")
-    stats = coco_to_yolo(annotations, tmp_path, tmp_path / "out", ["bottle"], negative_fraction=1)
-    assert stats == {"positive_images": 1, "negative_images": 1}
-    label = (tmp_path / "out" / "labels" / "1.txt").read_text(encoding="utf-8")
+    out = tmp_path / "out"
+    stats = coco_to_yolo(
+        annotations, tmp_path, out, ["bottle"], negative_fraction=1, val_fraction=0
+    )
+    assert stats["train"] == {"positive_images": 1, "negative_images": 1}
+    assert stats["val"] == {"positive_images": 0, "negative_images": 0}
+    label = (out / "train" / "labels" / "1.txt").read_text(encoding="utf-8")
     assert label == "0 0.500000 0.500000 0.400000 0.400000"
-    assert (tmp_path / "out" / "labels" / "2.txt").read_text(encoding="utf-8") == ""
+    assert (out / "train" / "labels" / "2.txt").read_text(encoding="utf-8") == ""
+    assert (out / "train" / "images" / "1.jpg").is_symlink()
+    yaml = write_yolo_yaml(out, ["bottle"]).read_text(encoding="utf-8")
+    assert "train: train/images" in yaml and "0: bottle" in yaml
+
+
+def test_crowd_images_are_not_negatives(tmp_path):
+    annotations = tmp_path / "instances.json"
+    coco = {
+        "images": [{"id": 1, "file_name": "1.jpg", "width": 10, "height": 10}],
+        "categories": [{"id": 44, "name": "bottle"}],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 44, "bbox": [0, 0, 5, 5], "iscrowd": 1}
+        ],
+    }
+    annotations.write_text(json.dumps(coco), encoding="utf-8")
+    (tmp_path / "1.jpg").write_bytes(b"")
+    stats = coco_to_yolo(annotations, tmp_path, tmp_path / "out", ["bottle"], 1, 0)
+    assert stats["train"] == {"positive_images": 0, "negative_images": 0}
+
+
+def test_sample_openimages_is_deterministic(tmp_path):
+    labels = tmp_path / "labels.csv"
+    rows = ["ImageID,Source,LabelName,Confidence"]
+    rows += [f"p{i},v,/m/04dr76w,1" for i in range(10)]
+    rows += [f"n{i},v,/m/04dr76w,0" for i in range(10)]
+    labels.write_text("\n".join(rows), encoding="utf-8")
+    first = sample_openimages(labels, ["bottle"], positives_per_class=3, negatives_per_class=4)
+    second = sample_openimages(labels, ["bottle"], positives_per_class=3, negatives_per_class=4)
+    assert first == second
+    assert sum(i.startswith("p") for i in first) == 3
+    assert sum(i.startswith("n") for i in first) == 4
 
 
 def test_load_openimages_uses_only_verified_labels(tmp_path):

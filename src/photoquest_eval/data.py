@@ -155,22 +155,29 @@ def coco_to_yolo(
     output_dir: Path,
     targets: Sequence[str] = tuple(HOME_CLASSES),
     negative_fraction: float = 0.1,
+    val_fraction: float = 0.1,
     seed: int = 2026,
-) -> dict[str, int]:
-    """Готовит обучающую подвыборку COCO в формате YOLO.
+) -> dict[str, dict[str, int]]:
+    """Готовит обучающую подвыборку COCO в формате YOLO: ``output_dir/{train,val}``.
 
     Берутся все фото с целевыми классами и случайная доля ``negative_fraction``
     фото без них, чтобы модель училась не срабатывать на посторонних сценах.
+    Фото с crowd-разметкой целевого класса в негативы не попадают: предмет на них есть.
+    Доля ``val_fraction`` фото откладывается для валидации при обучении.
     Фото не копируются: создаются символические ссылки.
     """
     coco = json.loads(annotation_path.read_text(encoding="utf-8"))
     categories = {row["id"]: row["name"] for row in coco["categories"]}
     class_index = {name: i for i, name in enumerate(targets)}
     lines: dict[int, list[str]] = defaultdict(list)
+    crowd_only: set[int] = set()
     images = {row["id"]: row for row in coco["images"]}
     for ann in coco["annotations"]:
         name = categories[ann["category_id"]]
-        if name not in class_index or ann.get("iscrowd", 0):
+        if name not in class_index:
+            continue
+        if ann.get("iscrowd", 0):
+            crowd_only.add(ann["image_id"])
             continue
         image = images[ann["image_id"]]
         x, y, w, h = ann["bbox"]
@@ -183,16 +190,126 @@ def coco_to_yolo(
             f"{h / image['height']:.6f}"
         )
     rng = np.random.default_rng(seed)
-    negatives = np.array(sorted(set(images) - set(lines)), dtype=np.int64)
+    negatives = np.array(sorted(set(images) - set(lines) - crowd_only), dtype=np.int64)
     keep = rng.random(len(negatives)) < negative_fraction
-    selected = sorted(lines) + negatives[keep].tolist()
-    (output_dir / "images").mkdir(parents=True, exist_ok=True)
-    (output_dir / "labels").mkdir(parents=True, exist_ok=True)
-    for image_id in selected:
-        name = images[image_id]["file_name"]
-        link = output_dir / "images" / name
-        if not link.exists():
-            link.symlink_to((image_dir / name).resolve())
-        label = output_dir / "labels" / Path(name).with_suffix(".txt").name
-        label.write_text("\n".join(lines.get(image_id, [])), encoding="utf-8")
-    return {"positive_images": len(lines), "negative_images": len(selected) - len(lines)}
+    selected = np.array(sorted(lines) + negatives[keep].tolist(), dtype=np.int64)
+    is_val = rng.random(len(selected)) < val_fraction
+    stats: dict[str, dict[str, int]] = {}
+    for split, ids in (("train", selected[~is_val]), ("val", selected[is_val])):
+        (output_dir / split / "images").mkdir(parents=True, exist_ok=True)
+        (output_dir / split / "labels").mkdir(parents=True, exist_ok=True)
+        positives = 0
+        for image_id in ids.tolist():
+            name = images[image_id]["file_name"]
+            link = output_dir / split / "images" / name
+            if not link.exists():
+                link.symlink_to((image_dir / name).resolve())
+            label = output_dir / split / "labels" / Path(name).with_suffix(".txt").name
+            label.write_text("\n".join(lines.get(image_id, [])), encoding="utf-8")
+            positives += image_id in lines
+        stats[split] = {"positive_images": positives, "negative_images": len(ids) - positives}
+    return stats
+
+
+def write_yolo_yaml(dataset_dir: Path, targets: Sequence[str] = tuple(HOME_CLASSES)) -> Path:
+    """Конфиг датасета Ultralytics для каталога из ``coco_to_yolo``."""
+    names = "\n".join(f"  {i}: {name}" for i, name in enumerate(targets))
+    path = dataset_dir / "dataset.yaml"
+    path.write_text(
+        f"path: {dataset_dir.resolve()}\ntrain: train/images\nval: val/images\nnames:\n{names}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+OPENIMAGES_URLS = {
+    "image_labels": (
+        "https://storage.googleapis.com/openimages/v7/oidv7-test-annotations-human-imagelabels.csv"
+    ),
+    "boxes": "https://storage.googleapis.com/openimages/v5/test-annotations-bbox.csv",
+    "image": "https://open-images-dataset.s3.amazonaws.com/test/{image_id}.jpg",
+}
+
+
+def sample_openimages(
+    image_labels_csv: Path,
+    targets: Sequence[str] = tuple(HOME_CLASSES),
+    positives_per_class: int = 500,
+    negatives_per_class: int = 1000,
+    seed: int = 2026,
+) -> list[str]:
+    """Фиксированная выборка фото Open Images test до запуска моделей.
+
+    Для каждого класса берётся до ``positives_per_class`` фото с проверенной
+    положительной меткой и до ``negatives_per_class`` с проверенной отрицательной.
+    """
+    positives: dict[str, set[str]] = defaultdict(set)
+    negatives: dict[str, set[str]] = defaultdict(set)
+    mid_to_target = {}
+    main_mid = {}
+    for target in targets:
+        mids = OPENIMAGES_MIDS[HOME_CLASSES[target]]
+        main_mid[target] = mids[0]
+        for mid in mids:
+            mid_to_target[mid] = target
+    with image_labels_csv.open(encoding="utf-8") as stream:
+        for row in csv.DictReader(stream):
+            target = mid_to_target.get(row["LabelName"])
+            if target is None:
+                continue
+            if float(row["Confidence"]) > 0:
+                positives[target].add(row["ImageID"])
+            elif row["LabelName"] == main_mid[target]:
+                negatives[target].add(row["ImageID"])
+    rng = np.random.default_rng(seed)
+    chosen: set[str] = set()
+    for target in targets:
+        for pool, limit in (
+            (positives[target], positives_per_class),
+            (negatives[target] - positives[target], negatives_per_class),
+        ):
+            ordered = sorted(pool)
+            take = min(limit, len(ordered))
+            chosen.update(ordered[i] for i in rng.choice(len(ordered), take, replace=False))
+    return sorted(chosen)
+
+
+def download_openimages(
+    image_ids: Sequence[str],
+    image_dir: Path,
+    max_side: int = 1024,
+    workers: int = 32,
+) -> list[str]:
+    """Скачивает фото Open Images test. Возвращает ID, которые скачать не удалось.
+
+    Оригиналы весят мегабайты, поэтому фото уменьшаются до ``max_side`` по длинной
+    стороне. Рамки Open Images нормированы и от размера не зависят.
+    """
+    import io
+    import urllib.request
+    from concurrent.futures import ThreadPoolExecutor
+
+    from PIL import Image
+
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    def fetch(image_id: str) -> str | None:
+        path = image_dir / f"{image_id}.jpg"
+        if path.exists() and path.stat().st_size:
+            return None
+        try:
+            url = OPENIMAGES_URLS["image"].format(image_id=image_id)
+            with urllib.request.urlopen(url, timeout=60) as response:
+                payload = response.read()
+            with Image.open(io.BytesIO(payload)) as image:
+                image = image.convert("RGB")
+                image.thumbnail((max_side, max_side))
+                temporary = path.with_suffix(".part")
+                image.save(temporary, format="JPEG", quality=90)
+            temporary.replace(path)
+        except OSError:
+            return image_id
+        return None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return [image_id for image_id in pool.map(fetch, image_ids) if image_id]
