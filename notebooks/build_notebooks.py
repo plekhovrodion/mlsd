@@ -80,6 +80,10 @@ CHECKPOINTS = '''CHECKPOINTS = {
         "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt",
         "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1",
     ),
+    "yolo11s.pt": (
+        "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11s.pt",
+        "85a76fe86dd8afe384648546b56a7a78580c7cb7b404fc595f97969322d502d5",
+    ),
 }
 
 
@@ -134,6 +138,53 @@ export_rows.append(
 exports = pd.DataFrame(export_rows)
 exports.to_csv(OUTPUT / "exports.csv", index=False)
 display(exports)"""
+
+TRADEOFF = """from sklearn.metrics import roc_auc_score
+
+from photoquest_eval.calibration import threshold_for_far
+from photoquest_eval.tradeoff import mean_rates, two_fold_tradeoff
+
+HN_LEVELS = (0.40, 0.20, 0.10)
+HN_FOLD = np.random.default_rng(SEED).random(len(oi.image_ids)) < 0.5
+
+
+def coco_floor(model_scores, column):
+    negatives = model_scores[coco.labels[:, column] == 0, column]
+    return threshold_for_far(negatives, "confidence_95pct", 0.05, 0.95)
+
+
+def tradeoff_rows(name, oi_scores, coco_scores, floors):
+    rows = []
+    for column, target in enumerate(TARGETS):
+        labels = oi.labels[:, column]
+        known = labels >= 0
+        row = {
+            "model": name,
+            "target": target,
+            "oi_auc_hardneg": roc_auc_score(labels[known], oi_scores[known, column]),
+        }
+        for point in two_fold_tradeoff(labels, oi_scores[:, column], floors[column], HN_LEVELS, HN_FOLD):
+            tag = int(point.level * 100)
+            coco_recall, coco_far = mean_rates(coco.labels[:, column], coco_scores[:, column], point.cutoffs)
+            row |= {
+                f"oi_recall@hn{tag}": point.recall,
+                f"oi_far@hn{tag}": point.far,
+                f"coco_recall@hn{tag}": coco_recall,
+                f"coco_far@hn{tag}": coco_far,
+            }
+        rows.append(row)
+    return rows
+
+
+hn_rows = []
+for name in MODELS:
+    coco_scores = scores[("coco", name, 640)]
+    floors = [coco_floor(coco_scores, column) for column in range(len(TARGETS))]
+    hn_rows += tradeoff_rows(name, scores[("openimages", name, 640)], coco_scores, floors)
+hardneg_tradeoff = pd.DataFrame(hn_rows)
+hardneg_tradeoff.to_csv(OUTPUT / "hardneg_tradeoff_per_class.csv", index=False)
+display(hardneg_tradeoff.groupby("model", sort=False).mean(numeric_only=True).round(3).T)
+display(hardneg_tradeoff.pivot(index="target", columns="model", values="oi_auc_hardneg").round(3))"""
 
 TRAIN_CELLS = [
     (
@@ -281,7 +332,7 @@ print(json.dumps(metadata, indent=2, ensure_ascii=False))""",
     ),
 ]
 
-HARDNEG_CELLS = [
+_HARDNEG_TEMPLATE = [
     (
         "markdown",
         """# ДЗ №3. YOLO11n на трудных негативах Open Images
@@ -320,6 +371,7 @@ HARDNEG_CELLS = [
 
 from photoquest_eval.data import (
     OPENIMAGES_URLS,
+    boxable_image_ids,
     coco_to_yolo,
     download_openimages,
     openimages_to_yolo,
@@ -393,6 +445,11 @@ for key in ("train_image_labels", "train_boxes"):
     if not csv_paths[key].exists():
         urllib.request.urlretrieve(OPENIMAGES_URLS[key], csv_paths[key])
 oi_status = scan_openimages_labels(csv_paths["train_image_labels"], TARGETS)
+# На S3 лежат только фото с рамками (~1,7 млн из ~9 млн с метками): выбираем только из них.
+boxable = boxable_image_ids(csv_paths["train_boxes"])
+labelled_images = len(oi_status)
+oi_status = {image_id: s for image_id, s in oi_status.items() if image_id in boxable}
+print(f"Фото с метками целевых классов: {labelled_images:,}, из них с рамками: {len(oi_status):,}")
 availability = pd.DataFrame(
     {
         "verified_positive": [sum(s.get(t) == 1 for s in oi_status.values()) for t in TARGETS],
@@ -452,6 +509,9 @@ print(f"Обучение заняло {train_seconds / 3600:.2f} ч, лучши�
     "coco_split_stats": coco_stats,
     "openimages_train_sample": OI_TRAIN_SAMPLE,
     "openimages_train_images": len(oi_ids),
+    "openimages_boxable_only": True,
+    "openimages_labelled_images": labelled_images,
+    "openimages_boxable_labelled_images": len(oi_status),
     "openimages_failed_downloads": len(failed),
     "openimages_split_stats": oi_stats,
     "openimages_csv_sha256": {key: sha256(path) for key, path in csv_paths.items()},
@@ -479,6 +539,73 @@ print(json.dumps(metadata, indent=2, ensure_ascii=False))""",
     ),
 ]
 
+
+def hardneg_cells(intro: str, output: str, run_name: str, base_model: str) -> list:
+    """Ноутбук обучения на трудных негативах с заданными моделью и именем запуска."""
+    swaps = [
+        (
+            'OUTPUT = Path("/kaggle/working/hw3_train_hardneg")',
+            f'OUTPUT = Path("/kaggle/working/{output}")',
+        ),
+        ('RUN_NAME = "yolo11n_hardneg"', f'RUN_NAME = "{run_name}"'),
+        ('"base_model": "yolo11n.pt",', f'"base_model": "{base_model}",'),
+    ]
+    cells = [("markdown", intro)]
+    for kind, source in _HARDNEG_TEMPLATE[1:]:
+        for old, new in swaps:
+            source = source.replace(old, new)
+        cells.append((kind, source))
+    return cells
+
+
+HARDNEG_COMMON_MD = """
+Данные как в первом запуске (`yolo11n_hardneg`, коммит `41e6245`), с одной правкой: фото
+Open Images train выбираются только из подмножества с рамками. Человеческие метки уровня
+фото есть примерно для 9 млн снимков, а на S3 лежат только ~1,7 млн фото с рамками; в первом
+запуске из-за этого не скачались 56% выбранных фото и в обучение попало ~7,7 тыс. вместо ~20 тыс.
+
+- **трудные негативы** — проверенная человеком отрицательная метка класса: фото попало
+  в разметку как кандидат классификатора, то есть на нём похожий предмет;
+- **положительные** — проверенная положительная метка с рамками.
+
+Оптимизатор и расписание как в первом запуске: SGD, lr0 = 0,002, разогрев 1 эпоха,
+первые 10 слоёв заморожены, 30 эпох.
+
+**Настройки Kaggle:** Accelerator — GPU T4, Internet — On.
+**Входные данные:** датасет COCO 2017 с `train2017` и `instances_train2017.json`."""
+
+HARDNEG_V2_CELLS = hardneg_cells(
+    """# ДЗ №3. YOLO11n на трудных негативах Open Images, v2
+
+Первый запуск (`yolo11n_hardneg`) улучшил разделение предмета и похожего предмета
+(AUC на трудных негативах Open Images 0,72 → 0,75) и recall, но FAR на похожих предметах
+при пороге COCO не снизился. Здесь проверяется, даст ли эффект в 2–3 раза больше данных.
+
+**Критерий успеха (зафиксирован до запуска).** На Open Images test средний AUC
+«предмет против трудного негатива» выше, чем у `yolo11n_hardneg` (0,751), а recall
+на COCO val2017 при консервативном пороге не ниже 82%."""
+    + HARDNEG_COMMON_MD,
+    "hw3_train_hardneg_v2",
+    "yolo11n_hardneg_v2",
+    "yolo11n.pt",
+)
+
+YOLO11S_CELLS = hardneg_cells(
+    """# ДЗ №3. YOLO11s на трудных негативах Open Images
+
+Проверяем, различает ли похожие предметы модель крупнее: YOLO11s (9,4 млн параметров,
+21,5 GFLOPs) против YOLO11n (2,6 млн, 6,5 GFLOPs) на тех же данных, что `yolo11n_hardneg_v2`.
+Цена — примерно втрое больше вычислений, что важно для работы в браузере в ДЗ №4.
+
+**Критерий успеха (зафиксирован до запуска).** На Open Images test средний AUC
+«предмет против трудного негатива» выше, чем у `yolo11n_hardneg_v2`, хотя бы на 0,03;
+иначе дополнительная задержка в браузере не оправдана."""
+    + HARDNEG_COMMON_MD,
+    "hw3_train_yolo11s_hardneg",
+    "yolo11s_hardneg",
+    "yolo11s.pt",
+)
+
 EVAL_CELLS = [
     (
         "markdown",
@@ -489,8 +616,11 @@ EVAL_CELLS = [
 - **YOLOv8n** — предобученный baseline;
 - **YOLO11n** — предобученный, показывает вклад архитектуры;
 - **YOLO11n-home** — дообученный на 10 домашних классах COCO (`02_train_yolo11n.ipynb`);
-- **YOLO11n-hardneg** — дообученный с трудными негативами Open Images train
-  (`04_train_yolo11n_hardneg.ipynb`), если его вывод подключён к ноутбуку.
+- **YOLO11n-hardneg** и **YOLO11n-hardneg-v2** — дообученные с трудными негативами
+  Open Images train (`04_train_yolo11n_hardneg.ipynb`; v1 — коммит `41e6245`);
+- **YOLO11s-hardneg** — модель крупнее на тех же данных (`05_train_yolo11s_hardneg.ipynb`).
+
+Дообученные модели берутся из входных данных ноутбука: какие подключены, те и оцениваются.
 
 Каждая модель проверяется на размерах входа 640, 416 и 320 и на двух наборах:
 COCO val2017 (протокол ДЗ №2, пороги по фолдам) и Open Images V7 test
@@ -603,7 +733,7 @@ print("Фото с ненулевым Rotation:", int(manifest["Rotation"].filln
     (
         "code",
         """FINE_TUNED = {}
-for name in ("yolo11n_home", "yolo11n_hardneg"):
+for name in ("yolo11n_home", "yolo11n_hardneg", "yolo11n_hardneg_v2", "yolo11s_hardneg"):
     found = sorted(Path("/kaggle/input").rglob(f"{name}.pt"))
     if found:
         FINE_TUNED[name] = found[0]
@@ -742,8 +872,13 @@ display(oi_summary.round(4))""",
         """pairs = [("yolo11n", "yolov8n")]
 for name in FINE_TUNED:
     pairs += [(name, "yolov8n"), (name, "yolo11n")]
-if len(FINE_TUNED) == 2:
-    pairs.append(("yolo11n_hardneg", "yolo11n_home"))
+for a, b in (
+    ("yolo11n_hardneg", "yolo11n_home"),
+    ("yolo11n_hardneg_v2", "yolo11n_hardneg"),
+    ("yolo11s_hardneg", "yolo11n_hardneg_v2"),
+):
+    if a in FINE_TUNED and b in FINE_TUNED:
+        pairs.append((a, b))
 diff_rows = []
 for a, b in pairs:
     for column, target in enumerate(TARGETS):
@@ -767,6 +902,18 @@ display(
     .round(4)
 )""",
     ),
+    (
+        "markdown",
+        """## Компромисс на трудных негативах
+
+Порог COCO почти не защищает от похожих предметов. Здесь порог каждого класса
+поднимается так, чтобы FAR на трудных негативах Open Images был 40, 20 или 10%;
+порог считается на половине фото и проверяется на другой половине (затем половины
+меняются местами). Тот же порог применяется к COCO val2017. Порог не опускается ниже
+порога COCO. AUC «предмет против трудного негатива» показывает, насколько модель
+вообще различает предмет и похожий предмет.""",
+    ),
+    ("code", TRADEOFF),
     ("markdown", "## Графики"),
     (
         "code",
@@ -932,6 +1079,287 @@ print(json.dumps(metadata, indent=2, ensure_ascii=False))""",
 ]
 
 
+COCO_VAL_CELL = next(source for kind, source in EVAL_CELLS if "kagglehub" in source)
+OI_DOWNLOAD_CELLS = [
+    source
+    for kind, source in EVAL_CELLS
+    if "test-images-with-rotation" in source or "sample_openimages(csv_paths" in source
+]
+
+VERIFY_CELLS = [
+    (
+        "markdown",
+        """# ДЗ №3. Вторая ступень: проверка выреза предмета
+
+Детектор плохо отличает предмет от похожего (AUC «предмет против трудного негатива»
+Open Images около 0,75): поднять порог можно только ценой половины правильных находок.
+Различение бутылки и банки — задача тонкой классификации, а детектор видит предмет
+на всём кадре 640 px. Проверяем двухступенчатую схему без обучения:
+
+1. детектор находит самую уверенную рамку класса;
+2. MobileCLIP-S0 (как в ДЗ №2) оценивает **вырез** этой рамки: вероятность подписи
+   класса среди подписей класса и четырёх похожих предметов (`photoquest_eval.verify`;
+   списки похожих предметов зафиксированы до запуска).
+
+Фото подтверждается, если score детектора выше порога COCO **и** вероятность подписи
+выше порога второй ступени. Порог второй ступени подбирается на половине фото Open Images
+под FAR на трудных негативах 40/20/10% и проверяется на другой половине, как в `03`.
+
+**Критерий успеха (зафиксирован до запуска).** При FAR на трудных негативах 20%
+(вход 640, среднее по классам) двухступенчатая схема сохраняет recall на Open Images
+не ниже 70% и на COCO val2017 не ниже 65% (у одного детектора 56% и 47%).
+
+**Настройки Kaggle:** GPU T4, Internet — On.
+**Входные данные:** COCO 2017 (val) и вывод ноутбука обучения детектора на трудных негативах.""",
+    ),
+    ("code", INSTALL),
+    ("code", COMMON),
+    (
+        "code",
+        """_ = subprocess.check_call(
+    [sys.executable, "-m", "pip", "install", "-q", "open_clip_torch==4.2.1", "timm==1.0.31",
+     "ftfy==6.3.1"]
+)
+MOBILECLIP_COMMIT = "48faa0fea4b08d74188b3841771aca6ff2c92852"
+_ = subprocess.check_call(
+    [sys.executable, "-m", "pip", "install", "-q", "--no-deps",
+     f"git+https://github.com/apple/ml-mobileclip.git@{MOBILECLIP_COMMIT}"]
+)""",
+    ),
+    (
+        "code",
+        """import torch.nn.functional as F
+from PIL import Image
+from sklearn.metrics import roc_auc_score
+
+from photoquest_eval.calibration import threshold_for_far
+from photoquest_eval.data import (
+    OPENIMAGES_URLS,
+    copy_images,
+    download_openimages,
+    load_coco,
+    load_openimages,
+    sample_openimages,
+)
+from photoquest_eval.inference import predict_best_boxes
+from photoquest_eval.tradeoff import mean_rates, status_rates, two_fold_tradeoff
+from photoquest_eval.verify import LOOKALIKES, crop_box, prompts, target_probability
+
+OUTPUT = Path("/kaggle/working/hw3_verify")
+OUTPUT.mkdir(parents=True, exist_ok=True)
+OI_SAMPLE = {"positives_per_class": 400, "negatives_per_class": 800, "seed": SEED}
+IMAGE_SIZE = 640
+HN_LEVELS = (0.40, 0.20, 0.10)
+CROP_MARGIN = 0.1
+MOBILECLIP = (
+    "https://docs-assets.developer.apple.com/ml-research/datasets/mobileclip/mobileclip_s0.pt",
+    "809b408eff74f8058843e86a1f92967097d42ba782450e85b8f4867b7f0ca0b7",
+)""",
+    ),
+    ("markdown", "## Данные — те же выборки, что в `03_evaluate_models.ipynb`"),
+    ("code", COCO_VAL_CELL),
+    *[("code", source) for source in OI_DOWNLOAD_CELLS],
+    ("markdown", "## Первая ступень: детектор"),
+    (
+        "code",
+        """DETECTOR = None
+for name in ("yolo11s_hardneg", "yolo11n_hardneg_v2", "yolo11n_hardneg"):
+    found = sorted(Path("/kaggle/input").rglob(f"{name}.pt"))
+    if found:
+        DETECTOR, DETECTOR_PATH = name, found[0]
+        break
+if DETECTOR is None:
+    raise FileNotFoundError("Добавьте во входные данные вывод ноутбука 04 или 05")
+print("Детектор:", DETECTOR, sha256(DETECTOR_PATH))
+det = {}
+for dataset in (coco, oi):
+    started = time.perf_counter()
+    det[dataset.name] = predict_best_boxes(
+        DETECTOR_PATH, dataset.image_paths, TARGETS, IMAGE_SIZE, device=0, **YOLO_SETTINGS
+    )
+    print(dataset.name, f"{time.perf_counter() - started:.0f} с")
+floors = []
+for column in range(len(TARGETS)):
+    negatives = det["coco"][0][coco.labels[:, column] == 0, column]
+    floors.append(threshold_for_far(negatives, "confidence_95pct", 0.05, 0.95))
+pd.Series(floors, index=TARGETS, name="coco_cutoff")""",
+    ),
+    ("markdown", "## Вторая ступень: MobileCLIP по вырезам"),
+    (
+        "code",
+        """import mobileclip
+from torch.utils.data import DataLoader, Dataset
+
+clip_path = OUTPUT / "pretrained" / "mobileclip_s0.pt"
+clip_path.parent.mkdir(parents=True, exist_ok=True)
+if not clip_path.exists():
+    urllib.request.urlretrieve(MOBILECLIP[0], clip_path)
+assert sha256(clip_path) == MOBILECLIP[1], "Не совпал SHA-256 MobileCLIP-S0"
+clip, _, preprocess = mobileclip.create_model_and_transforms(
+    "mobileclip_s0", pretrained=str(clip_path), reparameterize=True, device="cuda"
+)
+clip.eval()
+tokenizer = mobileclip.get_tokenizer("mobileclip_s0")
+with torch.inference_mode():
+    text_features = {
+        target: F.normalize(clip.encode_text(tokenizer(prompts(target)).to("cuda")).float(), dim=-1)
+        for target in TARGETS
+    }
+
+
+class Crops(Dataset):
+    \"\"\"Вырезы лучших рамок: (фото, класс) для всех пар, где детектор что-то нашёл.\"\"\"
+
+    def __init__(self, paths, boxes):
+        self.paths, self.boxes = paths, boxes
+        self.pairs = [
+            (row, column)
+            for row in range(len(paths))
+            for column in range(len(TARGETS))
+            if np.isfinite(boxes[row, column]).all()
+        ]
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def __getitem__(self, index):
+        row, column = self.pairs[index]
+        with Image.open(self.paths[row]) as image:
+            image = image.convert("RGB")
+            area = crop_box(image.width, image.height, self.boxes[row, column], CROP_MARGIN)
+            crop = image.crop(area) if area else image
+        return preprocess(crop), row, column
+
+
+def verify(dataset):
+    boxes = det[dataset.name][1]
+    probability = np.zeros(boxes.shape[:2], dtype=np.float32)
+    loader = DataLoader(Crops(dataset.image_paths, boxes), batch_size=256, num_workers=4)
+    for batch, rows, columns in loader:
+        with torch.inference_mode():
+            features = F.normalize(clip.encode_image(batch.to("cuda")).float(), dim=-1)
+        for feature, row, column in zip(features, rows.tolist(), columns.tolist(), strict=True):
+            target = TARGETS[column]
+            similarity = (feature @ text_features[target].T).cpu().numpy()
+            probability[row, column] = target_probability(similarity)
+    return probability
+
+
+clip_scores = {}
+clip_timing = {}
+for dataset in (coco, oi):
+    started = time.perf_counter()
+    clip_scores[dataset.name] = verify(dataset)
+    clip_timing[dataset.name] = time.perf_counter() - started
+    print(dataset.name, f"{clip_timing[dataset.name]:.0f} с")
+np.savez_compressed(
+    OUTPUT / "two_stage_scores.npz",
+    **{f"{name}__detector": det[name][0] for name in det},
+    **{f"{name}__boxes": det[name][1] for name in det},
+    **{f"{name}__clip": clip_scores[name] for name in clip_scores},
+)""",
+    ),
+    (
+        "markdown",
+        """## Результат
+
+Для каждого класса сравниваются три правила при одном и том же целевом FAR
+на трудных негативах: только детектор; только вторая ступень (среди фото,
+где детектор выше порога COCO); их произведение как единый score.""",
+    ),
+    (
+        "code",
+        """fold = np.random.default_rng(SEED).random(len(oi.image_ids)) < 0.5
+rows, status_records = [], []
+for column, target in enumerate(TARGETS):
+    labels = oi.labels[:, column]
+    known = labels >= 0
+    floor = floors[column]
+    rules = {
+        "detector": (det["openimages"][0][:, column], det["coco"][0][:, column], floor),
+        # Вторая ступень работает только на фото, прошедших порог детектора.
+        "two_stage": (
+            np.where(det["openimages"][0][:, column] > floor, clip_scores["openimages"][:, column], -1.0),
+            np.where(det["coco"][0][:, column] > floor, clip_scores["coco"][:, column], -1.0),
+            -0.5,
+        ),
+        "product": (
+            det["openimages"][0][:, column] * clip_scores["openimages"][:, column],
+            det["coco"][0][:, column] * clip_scores["coco"][:, column],
+            0.0,
+        ),
+    }
+    for rule, (oi_s, coco_s, rule_floor) in rules.items():
+        row = {"target": target, "rule": rule, "oi_auc_hardneg": roc_auc_score(labels[known], oi_s[known])}
+        for point in two_fold_tradeoff(labels, oi_s, rule_floor, HN_LEVELS, fold):
+            tag = int(point.level * 100)
+            coco_recall, coco_far = mean_rates(coco.labels[:, column], coco_s, point.cutoffs)
+            row |= {f"oi_recall@hn{tag}": point.recall, f"oi_far@hn{tag}": point.far,
+                    f"coco_recall@hn{tag}": coco_recall, f"coco_far@hn{tag}": coco_far}
+        rows.append(row)
+    # Три статуса двухступенчатой схемы: «да» — выше порога HN 20%, «не уверен» — прошёл
+    # только детектор, «не найдено» — детектор ниже порога COCO.
+    oi_s, coco_s, _ = rules["two_stage"]
+    point = two_fold_tradeoff(labels, oi_s, -0.5, (0.20,), fold)[0]
+    high = float(np.mean(point.cutoffs))
+    for name, values in (
+        ("oi_positive", oi_s[labels == 1]),
+        ("oi_hardneg", oi_s[labels == 0]),
+        ("coco_positive", coco_s[coco.labels[:, column] == 1]),
+        ("coco_negative", coco_s[coco.labels[:, column] == 0]),
+    ):
+        confirmed, uncertain, not_found = status_rates(values, -0.5, high)
+        status_records.append({"target": target, "set": name, "confirmed": confirmed,
+                               "uncertain": uncertain, "not_found": not_found})
+two_stage = pd.DataFrame(rows)
+two_stage.to_csv(OUTPUT / "two_stage_tradeoff_per_class.csv", index=False)
+statuses = pd.DataFrame(status_records)
+statuses.to_csv(OUTPUT / "two_stage_statuses_per_class.csv", index=False)
+display(two_stage.groupby("rule", sort=False).mean(numeric_only=True).round(3).T)
+display(two_stage.pivot(index="target", columns="rule", values="oi_auc_hardneg").round(3))
+display(two_stage.pivot(index="target", columns="rule", values="oi_recall@hn20").round(3))
+display(statuses.groupby("set").mean(numeric_only=True).round(3))""",
+    ),
+    (
+        "code",
+        """summary = two_stage.groupby("rule").mean(numeric_only=True)
+criterion = {
+    "oi_recall@hn20": float(summary.loc["two_stage", "oi_recall@hn20"]),
+    "coco_recall@hn20": float(summary.loc["two_stage", "coco_recall@hn20"]),
+}
+criterion["passed"] = criterion["oi_recall@hn20"] >= 0.70 and criterion["coco_recall@hn20"] >= 0.65
+crops = {name: int(np.isfinite(det[name][1]).all(axis=-1).sum()) for name in det}
+metadata = {
+    "repo_ref": REPO_REF,
+    "repo_commit": REPO_COMMIT,
+    "detector": DETECTOR,
+    "detector_sha256": sha256(DETECTOR_PATH),
+    "mobileclip_sha256": MOBILECLIP[1],
+    "mobileclip_commit": MOBILECLIP_COMMIT,
+    "lookalikes": {target: list(LOOKALIKES[target]) for target in TARGETS},
+    "crop_margin": CROP_MARGIN,
+    "image_size": IMAGE_SIZE,
+    "hn_levels": list(HN_LEVELS),
+    "criterion": criterion,
+    "crops": crops,
+    "clip_seconds": clip_timing,
+    "clip_ms_per_crop_t4": {name: 1000 * clip_timing[name] / max(crops[name], 1) for name in crops},
+    "gpu": torch.cuda.get_device_name(0),
+    "python": platform.python_version(),
+    "packages": package_versions("torch", "ultralytics", "open_clip_torch", "timm", "numpy"),
+    "started_utc": STARTED_UTC,
+    "elapsed_seconds": round(time.perf_counter() - STARTED, 1),
+}
+(OUTPUT / "metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
+with zipfile.ZipFile("/kaggle/working/hw3_verify_results.zip", "w", zipfile.ZIP_DEFLATED) as z:
+    for path in sorted(OUTPUT.rglob("*")):
+        if path.is_file() and "pretrained" not in path.relative_to(OUTPUT).parts:
+            z.write(path, path.relative_to(OUTPUT))
+print(json.dumps(metadata, indent=2, ensure_ascii=False))""",
+    ),
+]
+
+
 def build(cells, path: Path) -> None:
     notebook = {
         "cells": [
@@ -956,4 +1384,6 @@ def build(cells, path: Path) -> None:
 if __name__ == "__main__":
     build(TRAIN_CELLS, HERE / "02_train_yolo11n.ipynb")
     build(EVAL_CELLS, HERE / "03_evaluate_models.ipynb")
-    build(HARDNEG_CELLS, HERE / "04_train_yolo11n_hardneg.ipynb")
+    build(HARDNEG_V2_CELLS, HERE / "04_train_yolo11n_hardneg.ipynb")
+    build(YOLO11S_CELLS, HERE / "05_train_yolo11s_hardneg.ipynb")
+    build(VERIFY_CELLS, HERE / "06_crop_verification.ipynb")

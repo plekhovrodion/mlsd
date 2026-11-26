@@ -389,6 +389,21 @@ def _filtered_rows(path: Path, label_names: set[str]):
                 yield dict(zip(header, parts))  # noqa: B905 — длина строки = длине заголовка
 
 
+def boxable_image_ids(boxes_csv: Path) -> set[str]:
+    """ID фото, у которых есть хотя бы одна рамка.
+
+    Человеческие метки уровня фото в V7 есть примерно для 9 млн снимков, а на S3
+    (``OPENIMAGES_URLS["image"]``) лежит только подмножество с рамками, около 1,7 млн.
+    Выборка для обучения берётся только из него, иначе большая часть фото не скачается.
+    """
+    ids: set[str] = set()
+    with boxes_csv.open(encoding="utf-8") as stream:
+        stream.readline()
+        for line in stream:
+            ids.add(line[: line.index(",")])
+    return ids
+
+
 def scan_openimages_labels(
     image_labels_csv: Path, targets: Sequence[str] = tuple(HOME_CLASSES)
 ) -> dict[str, dict[str, int]]:
