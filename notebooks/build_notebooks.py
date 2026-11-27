@@ -12,7 +12,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 REPO = "https://github.com/plekhovrodion/mlsd"
 
-INSTALL = f'''import subprocess
+INSTALL = f"""import subprocess
 import sys
 
 # Ветка или коммит репозитория с пакетом photoquest_eval.
@@ -26,7 +26,7 @@ _ = subprocess.check_call(
 REPO_COMMIT = subprocess.check_output(
     ["git", "ls-remote", "{REPO}", REPO_REF], text=True
 ).split()[0]
-print("photoquest_eval:", REPO_REF, REPO_COMMIT)'''
+print("photoquest_eval:", REPO_REF, REPO_COMMIT)"""
 
 COMMON = """import hashlib
 import importlib.metadata
