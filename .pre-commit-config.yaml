@@ -11,7 +11,7 @@ repos:
         args: ["--maxkb=1024"]
         # Выполненный ноутбук и галерея EDA содержат иллюстрации COCO;
         # scores.npz — сырые score всех моделей ДЗ №3 для пересчёта метрик.
-        exclude: ^(notebooks/01_coco_eda\.ipynb|reports/eda/kaggle_hw2_results/image_examples\.png|reports/hw3/kaggle_eval_v[0-9]+/scores\.npz)$
+        exclude: ^(notebooks/01_coco_eda\.ipynb|reports/eda/kaggle_hw2_results/image_examples\.png|reports/hw3/kaggle_eval_v3/scores\.npz)$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.8.6
