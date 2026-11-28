@@ -18,4 +18,24 @@ pre-commit run --all-files    # разовая проверка всего ре�
 pytest                        # тесты метрик, калибровки порогов и инференса
 ```
 
-Для запуска YOLO локально: `pip install -e ".[yolo]"`. Обучение и оценка моделей выполняются в ноутбуках Kaggle из папки `notebooks/`.
+Для запуска YOLO локально: `pip install -e ".[yolo]"`.
+
+## Документы
+
+- [Design doc](docs/ml_system_design_doc.md) — цели, методология, этапы, подготовка пилота, риски и журнал решений.
+- [Сравнение готовых моделей (ДЗ №2)](reports/eda/model_comparison.md).
+- [Обучение и оценка baseline и основной модели (ДЗ №3)](reports/hw3/model_training.md), [источники данных и лицензии](reports/hw3/data_sources.md).
+
+## Ноутбуки ДЗ №3
+
+Ноутбуки собираются скриптом `notebooks/build_notebooks.py` и запускаются на Kaggle (GPU T4, Internet On). Каждый ставит пакет `photoquest_eval` из ветки `hw_3`. Порядок запуска:
+
+| № | Ноутбук | Что делает | Входные данные |
+|---|---|---|---|
+| 1 | `02_train_yolo11n.ipynb` | Дообучение YOLO11n на COCO train | COCO 2017 |
+| 2 | `04_train_yolo11n_hardneg.ipynb` | Дообучение YOLO11n на COCO train и трудных негативах Open Images train | COCO 2017 |
+| 3 | `05_train_yolo11s_hardneg.ipynb` | То же для YOLO11s (основная модель) | COCO 2017 |
+| 4 | `03_evaluate_models.ipynb` | Оценка всех моделей, пороги, ONNX | COCO 2017 и выводы ноутбуков 1–3 |
+| 5 | `06_crop_verification.ipynb` | Вторая ступень: проверка выреза MobileCLIP-S0 | COCO 2017 и вывод ноутбука 2 |
+
+Ноутбуки 1–3 независимы и могут идти параллельно. Результаты оценки сохранены в [reports/hw3/kaggle_eval_v3/](reports/hw3/kaggle_eval_v3/).
