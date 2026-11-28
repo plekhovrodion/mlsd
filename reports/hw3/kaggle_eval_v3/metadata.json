@@ -1,0 +1,61 @@
+{
+  "repo_ref": "hw_3",
+  "repo_commit": "65c2117a370a5c5764f4935af9e097eda3042af6",
+  "targets": [
+    "bottle",
+    "cell phone",
+    "backpack",
+    "clock",
+    "vase",
+    "potted plant",
+    "laptop",
+    "keyboard",
+    "tv",
+    "banana"
+  ],
+  "rule_version": "hw3-r1",
+  "yolo_settings": {
+    "conf": 0.001,
+    "iou": 0.7,
+    "max_det": 300
+  },
+  "image_sizes": [
+    640,
+    416,
+    320
+  ],
+  "openimages_sample": {
+    "positives_per_class": 400,
+    "negatives_per_class": 800,
+    "seed": 2026
+  },
+  "openimages_images": 4315,
+  "openimages_failed_downloads": [],
+  "openimages_csv_sha256": {
+    "image_labels": "917d3ca8c0a2e09d652fb3148e9264df6117bfcaccf425a60a29b23269487953",
+    "boxes": "fe22e579b9453875601576859d14ef3304058165de139c66b725e599202bd7b1",
+    "meta": "de55c6b8cbda32a79f4a20f28572d54e9c49d527a4006725675764074a51a36d"
+  },
+  "coco_val_images": 5000,
+  "model_sha256": {
+    "yolov8n": "f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36",
+    "yolo11n": "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1",
+    "yolo11n_home": "47dc18d8eef7206e8aaa49c9be71293e04b10328f5dba9ae807d7f11ba0d7fff",
+    "yolo11n_hardneg": "2be8477b97acc236c62a8fa864010fe293c405df6b4ff4758439b5645024dceb",
+    "yolo11n_hardneg_v2": "7e5def44570db5cfb3dd5452c4e7a18b763dc99771e51d05750cecb3eaa06359",
+    "yolo11s_hardneg": "bbc182a62da406715a28aa3f59e14727858cd1c9cdd18f130610879b7ab37945"
+  },
+  "gpu": "Tesla T4",
+  "python": "3.13.16",
+  "packages": {
+    "torch": "2.11.0+cu130",
+    "ultralytics": "8.4.207",
+    "numpy": "2.1.3",
+    "pandas": "2.3.3",
+    "scikit-learn": "1.6.1",
+    "scipy": "1.16.3",
+    "onnxruntime": "1.32.0"
+  },
+  "started_utc": "2026-11-28T11:00:40.376776+00:00",
+  "elapsed_seconds": 2721.9
+}
