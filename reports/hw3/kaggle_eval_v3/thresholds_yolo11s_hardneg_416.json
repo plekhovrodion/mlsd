@@ -1,0 +1,48 @@
+{
+  "model_version": "yolo11s_hardneg-bbc182a62da4",
+  "rule_version": "hw3-r1",
+  "image_size": 416,
+  "protocol": "confidence_95pct",
+  "rules": {
+    "bottle": {
+      "high": 0.17790596187114716,
+      "low": 0.0
+    },
+    "cell phone": {
+      "high": 0.04933835566043854,
+      "low": 0.0
+    },
+    "backpack": {
+      "high": 0.1651078462600708,
+      "low": 0.0
+    },
+    "clock": {
+      "high": 0.03349218890070915,
+      "low": 0.0
+    },
+    "vase": {
+      "high": 0.023672206327319145,
+      "low": 0.0
+    },
+    "potted plant": {
+      "high": 0.11601000279188156,
+      "low": 0.0
+    },
+    "laptop": {
+      "high": 0.006809356156736612,
+      "low": 0.0
+    },
+    "keyboard": {
+      "high": 0.0022357054986059666,
+      "low": 0.0
+    },
+    "tv": {
+      "high": 0.026931753382086754,
+      "low": 0.0
+    },
+    "banana": {
+      "high": 0.00974581390619278,
+      "low": 0.0
+    }
+  }
+}
